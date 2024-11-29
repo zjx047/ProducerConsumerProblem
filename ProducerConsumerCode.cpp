@@ -34,29 +34,31 @@ void producer(int jobs_to_generate, int producer_id, counting_semaphore<>& space
     for (int i = 0; i < jobs_to_generate; ++i) {
         int job = rand() % 10 + 1;
 
-        while (true) {
-
+        try {
             // Wait for space in buffer to become available, with timeout
             if (space.try_acquire_for(chrono::seconds(timeout_seconds))) {
-
                 // Critical section: Lock buffer access to ensure exclusive write
                 buffer_mutex.acquire();
 
-                // Add the job to the buffer and update relevant pointers
+                // Add job to the buffer and update circular buffer
                 buffer[tail] = job;
                 tail = (tail + 1) % buffer_size;
                 count++;
                 cout << "Producer " << producer_id << " added job: '" << job
-                    << "' to buffer. Buffer now has " << count << (count == 1 ? " job." : " jobs.") << endl;
+                     << "' to buffer. Buffer now has " << count << (count == 1 ? " job." : " jobs.") << endl;
 
-                // Unlock buffer access and signal that an item is available
-                buffer_mutex.release();
+                buffer_mutex.release();  // Unlock buffer access and signal that an item is available
                 item.release();
-                break;
             } else {
                 cout << "Producer " << producer_id << " quitting due to timeout!" << endl;
                 return;
             }
+        } catch (const system_error& e) {
+            cerr << "Semaphore operation failed in producer " << producer_id << ": " << e.what() << endl;
+            return;
+        } catch (const exception& e) {
+            cerr << "Error in producer " << producer_id << ": " << e.what() << endl;
+            return;
         }
     }
     cout << "Producer " << producer_id << " has successfully produced all " << jobs_to_generate 
@@ -78,23 +80,36 @@ void producer(int jobs_to_generate, int producer_id, counting_semaphore<>& space
  */
 void consumer(int consumer_id, counting_semaphore<>& space, counting_semaphore<>& item, binary_semaphore& buffer_mutex) {
     while (true) {
-        // Wait for an item to become available, with timeout
-        if (item.try_acquire_for(chrono::seconds(timeout_seconds))) {
-            buffer_mutex.acquire();
-            if (count > 0) { // Do I need this?
+
+        try {
+            // Wait for an item to become available, with timeout
+            if (item.try_acquire_for(chrono::seconds(timeout_seconds))) {
+
+                // Critical section: Lock buffer access to ensure exclusive write
+                buffer_mutex.acquire();
+
+                // Consume job from the buffer and update circular buffer
                 int job = buffer[head];
                 head = (head + 1) % buffer_size;
                 count--;
                 cout << "Consumer " << consumer_id << " consumed job: '" << job
                         << "' from buffer. Buffer now has " << count << " jobs left." << endl;
 
-                // Simulate processing job
+                // Unlock buffer access and signal that a space is made available
+                buffer_mutex.release();
+                space.release();
+
+                // Simulate consuming job
                 this_thread::sleep_for(chrono::seconds(job));
+            } else {
+                cout << "Consumer " << consumer_id << " quitting due to timeout!" << endl;
+                return;
             }
-            buffer_mutex.release();
-            space.release();
-        } else {
-            cout << "Consumer " << consumer_id << " quitting due to timeout!" << endl;
+        } catch (const system_error& e) {
+            cerr << "Semaphore operation failed in consumer: " << e.what() << endl;
+            return;
+        } catch (const exception& e) {
+            cerr << "Error in consumer: " << e.what() << endl;
             return;
         }
     }
